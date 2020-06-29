@@ -1,17 +1,20 @@
 package com.example.rxjavademo.di.module
 
-import android.app.Application
+import android.util.Log
+import com.example.rxjavademo.base.BaseApplication
 import com.example.rxjavademo.data.rest.NewsService
 import com.example.rxjavademo.utils.InternetUtil.isInternetOn
 import dagger.Module
 import dagger.Provides
 import okhttp3.*
+import okhttp3.CacheControl
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.adapter.rxjava2.RxJava2CallAdapterFactory
 import retrofit2.converter.gson.GsonConverterFactory
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
 
@@ -19,12 +22,68 @@ import javax.inject.Singleton
 class RetrofitModule {
     private val BASE_URL = "https://newsapi.org/"
 
+
+    private val CONNECT_TIMEOUT = 45
+    private val WRITE_TIMEOUT = 45
+    private val READ_TIMEOUT = 45
+    private val CACHE_SIZE = 10 * 1024 * 1024 // 10 MB
+        .toLong()
+
+    //for making it private
+    private fun provideHttpCache(): Cache? {
+        val cacheFile =
+            File(BaseApplication.instance?.cacheDir, "newfile")
+        return Cache(cacheFile, CACHE_SIZE)
+    }
+
     @Singleton
     @Provides
-    fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit {
+    fun provideRetrofit(): Retrofit {
+
+        val client = OkHttpClient.Builder()
+        client.connectTimeout(CONNECT_TIMEOUT.toLong(), TimeUnit.SECONDS)
+        client.readTimeout(READ_TIMEOUT.toLong(), TimeUnit.SECONDS)
+        client.writeTimeout(WRITE_TIMEOUT.toLong(), TimeUnit.SECONDS)
+        client.cache(provideHttpCache())
+
+
+        client.addInterceptor(object : Interceptor {
+            @Throws(IOException::class)
+            override fun intercept(chain: Interceptor.Chain): Response {
+
+                val cacheBuilder = CacheControl.Builder()
+                cacheBuilder.maxAge(0, TimeUnit.SECONDS)
+                cacheBuilder.maxStale(365, TimeUnit.DAYS)
+                val cacheControl = cacheBuilder.build()
+
+                var request: Request = chain.request()
+                if (isInternetOn()) {
+                    request = request.newBuilder()
+                        .cacheControl(cacheControl)
+                        .build()
+                }
+
+
+                request = if (isInternetOn()) {
+                    request.newBuilder().header("Cache-Control", "public, max-age=" + 60)
+                        .build()
+                } else {
+                    Log.d("Cache ","Loading")
+                    request.newBuilder().header(
+                        "Cache-Control",
+                        "max-age=" + 60 * 60 * 24 * 7
+                    )
+                        .removeHeader("Pragma").build() // 1 week
+                }
+                return chain.proceed(request)
+            }
+        })
+
+        val okHttpClient=client.build()
         return Retrofit.Builder().baseUrl(BASE_URL)
             .addCallAdapterFactory(RxJava2CallAdapterFactory.create())
             .addConverterFactory(GsonConverterFactory.create())
+            .client(okHttpClient)
             .build()
     }
 
@@ -40,52 +99,5 @@ class RetrofitModule {
         return HttpLoggingInterceptor()
             .setLevel(HttpLoggingInterceptor.Level.BODY)
     }
-
-    @Provides
-    @Singleton
-    fun provideHttpCache(application: Application): Cache {
-        val cacheSize = 10 * 1024 * 1024
-        //setup cache
-        val httpCacheDirectory = File(application.getCacheDir(), "responses")
-        return Cache(httpCacheDirectory, cacheSize.toLong())
-    }
-
-    @Provides
-    fun provideHttpClient(cache: Cache): OkHttpClient {
-        val client = OkHttpClient.Builder()
-            .addInterceptor(object : Interceptor {
-                @Throws(IOException::class)
-                override fun intercept(chain: Interceptor.Chain): Response {
-                    val response: Response = chain.proceed(chain.request())
-                    val maxAge =
-                        60 // read from cache for 60 seconds even if there is internet connection
-                    return response.newBuilder()
-                        .header("Cache-Control", "public, max-age=$maxAge")
-                        .removeHeader("Pragma")
-                        .build()
-                }
-            })
-            .addNetworkInterceptor(object :Interceptor{
-                override fun intercept(chain: Interceptor.Chain): Response {
-                    var request: Request = chain.request()
-                    if (!isInternetOn()) {
-                        val maxStale =
-                            60 * 60 * 24 * 30 // Offline cache available for 30 days
-                        request = request.newBuilder()
-                            .header(
-                                "Cache-Control",
-                                "public, only-if-cached, max-stale=$maxStale"
-                            )
-                            .removeHeader("Pragma")
-                            .build()
-                    }
-                    return chain.proceed(request)
-                }
-
-            })
-        client.cache(cache)
-        return client.build()
-    }
-
 
 }

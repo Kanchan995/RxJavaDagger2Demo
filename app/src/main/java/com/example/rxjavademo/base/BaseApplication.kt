@@ -15,4 +15,13 @@ class BaseApplication : DaggerApplication() {
         return component
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        instance=this
+    }
+
+    companion object{
+        var instance:BaseApplication?=null
+    }
+
 }
